@@ -1,140 +1,99 @@
 import flet as ft
 import httpx
 import json
-import os  # 新增：用来读取环境变量
+import os
+import sys
 
+# 强制打印日志到控制台
+def log(msg):
+    print(f"[DEBUG] {msg}", file=sys.stdout, flush=True)
 
 def main(page: ft.Page):
-    # --- 1. 网页版专属配置 ---
-    page.title = "Grok Desktop"
+    page.title = "Grok Debug"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#000000"
-
-    # 这一行很重要：适配手机屏幕
     page.adaptive = True
 
-    # --- 2. 获取 API Key (安全版) ---
-    # 在本地运行时，如果找不到环境变量，请确保你在电脑上设置了，或者暂时在这里写死测试
-    # 在 Render 服务器上，我们会专门设置这个变量
-    API_KEY = os.environ.get("XAI_API_KEY")
+    # 1. 打印检查 API Key 是否真的读取到了
+    api_key = os.environ.get("XAI_API_KEY")
+    if api_key:
+        log(f"API Key loaded. Length: {len(api_key)}")
+        log(f"Key starts with: {api_key[:4]}...")
+    else:
+        log("CRITICAL: API Key is MISSING or Empty!")
 
-    if not API_KEY:
-        page.add(ft.Text("❌ 错误：未配置 API Key，请检查服务器环境变量。", color="red"))
-        return
-
-    # --- 下面是之前的 UI 和逻辑代码，基本不用动 ---
     chat_list = ft.ListView(expand=True, spacing=15, auto_scroll=True)
-
-    txt_input = ft.TextField(
-        hint_text="Ask Grok...",
-        bgcolor="#111111",
-        border_color="#333333",
-        color="white",
-        border_radius=15,
-        multiline=True,
-        min_lines=1,
-        max_lines=5,
-        expand=True,
-        shift_enter=True,
-    )
+    txt_input = ft.TextField(hint_text="Type something...", bgcolor="#111111", color="white", expand=True)
 
     def send_message(e):
         user_text = txt_input.value
-        if not user_text:
-            return
+        if not user_text: return
+
+        log(f"User sending message: {user_text}") # 打印用户输入
 
         txt_input.value = ""
         txt_input.disabled = True
+        
+        chat_list.controls.append(ft.Text(f"You: {user_text}", color="white"))
+        
+        # 状态指示器
+        status_text = ft.Text("Connecting to xAI...", color="yellow")
+        chat_list.controls.append(status_text)
         page.update()
 
-        chat_list.controls.append(
-            ft.Row([
-                ft.Container(
-                    content=ft.Text(user_text, size=15, color="white"),
-                    bgcolor="#222222",
-                    padding=15,
-                    border_radius=15,
-                    maw=300,
-                )
-            ], alignment=ft.MainAxisAlignment.END)
-        )
-        page.update()
-
-        ai_response_text = ft.Text("Thinking...", size=15, color="grey", font_family="monospace")
-        chat_list.controls.append(
-            ft.Row([ft.Container(content=ai_response_text, padding=0, maw=350)], alignment=ft.MainAxisAlignment.START)
-        )
-        page.update()
-
-        full_response = ""
         try:
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {API_KEY}"
+                "Authorization": f"Bearer {api_key}"
             }
+            # ⚠️ 关闭流式，设置超时为 10 秒
             payload = {
-                "model": "grok-4-1-fast-reasoning",
-                "messages": [
-                    {"role": "system", "content": "You are Grok."},
-                    {"role": "user", "content": user_text}
-                ],
-                "stream": True
+                "model": "grok-3",
+                "messages": [{"role": "user", "content": user_text}],
+                "stream": False 
             }
 
-            with httpx.stream("POST", "https://api.x.ai/v1/chat/completions", headers=headers, json=payload,
-                              timeout=60) as response:
-                if response.status_code != 200:
-                    ai_response_text.value = f"Error: {response.status_code} - {response.text}"
-                else:
-                    ai_response_text.value = ""  # 清空 Thinking
-                    for line in response.iter_lines():
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(data_str)
-                                content = chunk['choices'][0]['delta'].get('content', '')
-                                full_response += content
-                                ai_response_text.value = full_response + "▌"
-                                page.update()
-                            except:
-                                pass
-            ai_response_text.value = full_response
+            log("Sending HTTP request...")
+            
+            # 发送请求
+            response = httpx.post(
+                "https://api.x.ai/v1/chat/completions", 
+                headers=headers, 
+                json=payload, 
+                timeout=15.0 # 设置超时，防止无限死等
+            )
+
+            log(f"Response Status Code: {response.status_code}")
+            log(f"Response Body: {response.text}")
+
+            if response.status_code == 200:
+                data = response.json()
+                reply = data['choices'][0]['message']['content']
+                status_text.value = f"Grok: {reply}"
+                status_text.color = "#E0E0E0"
+            else:
+                # 如果出错，直接把错误码显示在屏幕上
+                status_text.value = f"ERROR: {response.status_code}\n{response.text}"
+                status_text.color = "red"
 
         except Exception as err:
-            ai_response_text.value = f"Error: {err}"
-            ai_response_text.color = "red"
+            log(f"EXCEPTION: {err}")
+            status_text.value = f"CRASH: {err}"
+            status_text.color = "red"
 
         txt_input.disabled = False
         txt_input.focus()
         page.update()
 
-    send_btn = ft.IconButton(
-        icon="arrow_upward",
-        icon_color="black",
-        bgcolor="white",
-        on_click=send_message
-    )
-    txt_input.on_submit = send_message
-
+    send_btn = ft.IconButton(icon="arrow_upward", on_click=send_message)
+    
     page.add(
-        ft.Column(
-            [
-                ft.Container(content=ft.Text("Grok", size=20, weight="bold", color="white"),
-                             alignment=ft.alignment.center),
-                chat_list,
-                ft.Divider(color="#333333"),
-                ft.Row([txt_input, send_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ],
-            expand=True,
-        )
+        ft.Column([
+            chat_list,
+            ft.Row([txt_input, send_btn]),
+        ], expand=True)
     )
 
-
-# --- 3. 关键修改：适配 Render 服务器端口 ---
 if __name__ == "__main__":
-    # 从 Render 环境变量获取端口，默认 8080
     port = int(os.environ.get("PORT", 8080))
-    # host="0.0.0.0" 意味着允许外网访问
     ft.app(target=main, view=ft.WEB_BROWSER, port=port, host="0.0.0.0")
