@@ -1,98 +1,128 @@
 import flet as ft
-import httpx
-import json
+from openai import OpenAI
 import os
-import sys
 
-# 强制打印日志到控制台
-def log(msg):
-    print(f"[DEBUG] {msg}", file=sys.stdout, flush=True)
 
 def main(page: ft.Page):
-    page.title = "Grok Debug"
+    # --- 基础设置 ---
+    page.title = "Grok App"
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#000000"
     page.adaptive = True
 
-    # 1. 打印检查 API Key 是否真的读取到了
+    # --- 获取 API Key ---
     api_key = os.environ.get("XAI_API_KEY")
-    if api_key:
-        log(f"API Key loaded. Length: {len(api_key)}")
-        log(f"Key starts with: {api_key[:4]}...")
-    else:
-        log("CRITICAL: API Key is MISSING or Empty!")
 
+    # --- UI 组件 ---
     chat_list = ft.ListView(expand=True, spacing=15, auto_scroll=True)
-    txt_input = ft.TextField(hint_text="Type something...", bgcolor="#111111", color="white", expand=True)
+
+    txt_input = ft.TextField(
+        hint_text="Ask Grok...",
+        bgcolor="#111111",
+        border_color="#333333",
+        color="white",
+        border_radius=15,
+        multiline=True,
+        min_lines=1,
+        max_lines=5,
+        expand=True,
+        shift_enter=True,
+    )
 
     def send_message(e):
         user_text = txt_input.value
         if not user_text: return
 
-        log(f"User sending message: {user_text}") # 打印用户输入
-
+        # 1. 锁住输入框
         txt_input.value = ""
         txt_input.disabled = True
-        
-        chat_list.controls.append(ft.Text(f"You: {user_text}", color="white"))
-        
-        # 状态指示器
-        status_text = ft.Text("Connecting to xAI...", color="yellow")
-        chat_list.controls.append(status_text)
+
+        # 2. 显示用户消息
+        chat_list.controls.append(
+            ft.Row([
+                ft.Container(
+                    content=ft.Text(user_text, color="white"),
+                    bgcolor="#222222", padding=15, border_radius=15, maw=300
+                )
+            ], alignment=ft.MainAxisAlignment.END)
+        )
         page.update()
 
-        try:
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
-            # ⚠️ 关闭流式，设置超时为 10 秒
-            payload = {
-                "model": "grok-3",
-                "messages": [{"role": "user", "content": user_text}],
-                "stream": False 
-            }
+        # 3. 预备 AI 回复框
+        response_text = ft.Text("Grok is thinking...", color="yellow", font_family="monospace")
+        chat_list.controls.append(
+            ft.Row([
+                ft.Container(content=response_text, padding=0, maw=350)
+            ], alignment=ft.MainAxisAlignment.START)
+        )
+        page.update()
 
-            log("Sending HTTP request...")
-            
-            # 发送请求
-            response = httpx.post(
-                "https://api.x.ai/v1/chat/completions", 
-                headers=headers, 
-                json=payload, 
-                timeout=15.0 # 设置超时，防止无限死等
+        # 4. 核心逻辑 (官方 SDK)
+        try:
+            if not api_key:
+                raise Exception("API Key 未配置！请检查 Render 环境变量。")
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://api.x.ai/v1",
             )
 
-            log(f"Response Status Code: {response.status_code}")
-            log(f"Response Body: {response.text}")
+            stream = client.chat.completions.create(
+                model="grok-4-1-fast-reasoning",
+                messages=[
+                    {"role": "system", "content": "You are Grok."},
+                    {"role": "user", "content": user_text}
+                ],
+                stream=True,
+            )
 
-            if response.status_code == 200:
-                data = response.json()
-                reply = data['choices'][0]['message']['content']
-                status_text.value = f"Grok: {reply}"
-                status_text.color = "#E0E0E0"
-            else:
-                # 如果出错，直接把错误码显示在屏幕上
-                status_text.value = f"ERROR: {response.status_code}\n{response.text}"
-                status_text.color = "red"
+            full_res = ""
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    full_res += content
+                    # 实时更新 UI
+                    response_text.value = full_res + "▌"
+                    response_text.color = "#E0E0E0"  # 变回正常颜色
+                    page.update()
+
+            # 移除光标
+            response_text.value = full_res
 
         except Exception as err:
-            log(f"EXCEPTION: {err}")
-            status_text.value = f"CRASH: {err}"
-            status_text.color = "red"
+            # ⚠️ 关键：如果有错误，直接显示在屏幕上，不再石沉大海
+            response_text.value = f"❌ Error: {str(err)}"
+            response_text.color = "red"
+            page.update()
 
+        # 5. 解锁输入
         txt_input.disabled = False
         txt_input.focus()
         page.update()
 
-    send_btn = ft.IconButton(icon="arrow_upward", on_click=send_message)
-    
-    page.add(
-        ft.Column([
-            chat_list,
-            ft.Row([txt_input, send_btn]),
-        ], expand=True)
+    # --- 修复图标 Bug 的按钮 ---
+    send_btn = ft.IconButton(
+        icon="arrow_upward",  # <--- 这里使用了字符串，绝对不会报错
+        icon_color="black",
+        bgcolor="white",
+        on_click=send_message
     )
+
+    txt_input.on_submit = send_message
+
+    page.add(
+        ft.Column(
+            [
+                ft.Container(content=ft.Text("Grok 3", size=20, weight="bold", color="white"),
+                             alignment=ft.alignment.center),
+                chat_list,
+                ft.Divider(color="#333333"),
+                ft.Row([txt_input, send_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ],
+            expand=True,
+        )
+    )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
