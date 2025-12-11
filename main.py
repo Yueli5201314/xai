@@ -73,7 +73,7 @@ def main(page: ft.Page):
                 "Authorization": f"Bearer {API_KEY}"
             }
             payload = {
-                "model": "grok-3",
+                "model": "grok-4-1-fast-reasoning",
                 "messages": [
                     {"role": "system", "content": "You are Grok."},
                     {"role": "user", "content": user_text}
@@ -111,7 +111,7 @@ def main(page: ft.Page):
         page.update()
 
     send_btn = ft.IconButton(
-        icon=ft.icons.ARROW_UPWARD_ROUNDED,
+        icon="arrow_upward",
         icon_color="black",
         bgcolor="white",
         on_click=send_message
